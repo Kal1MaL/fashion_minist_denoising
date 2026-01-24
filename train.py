@@ -5,7 +5,6 @@ import pandas as pd
 import numpy as np
 from torch.utils.data import DataLoader, random_split
 import pytorch_lightning as pl
-# 1. 引入回调函数
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from tqdm import tqdm
 
@@ -15,7 +14,7 @@ from src.diffusion import ConditionalDDPM
 
 def generate_benchmark_csv(model, cfg, output_filename="submission.csv"):
     """
-    终极版推理函数：包含 TTA (Test-Time Augmentation) 和 Ensemble
+    推理函数：包含 TTA (Test-Time Augmentation) 和 Ensemble
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n🚀 Starting Final Inference with TTA on {device}...")
@@ -32,9 +31,9 @@ def generate_benchmark_csv(model, cfg, output_filename="submission.csv"):
 
     all_denoised_images = []
 
-    # 这里建议：如果你有时间，设为 3 或 5 会更稳
-    # N=1 (TTA后是2张平均) -> 对应你刚才的 0.0064
-    # N=3 (TTA后是6张平均) -> 可能会冲击 0.0060
+
+    # N=1 (TTA后是2张平均)
+    # N=3 (TTA后是6张平均)
     N_SAMPLES = 1
 
     with torch.no_grad():
@@ -67,15 +66,15 @@ def generate_benchmark_csv(model, cfg, output_filename="submission.csv"):
             # 关键：数值截断 (防止 Cosine Schedule 的数值爆炸)
             averaged_img = torch.clamp(averaged_img, 0.0, 1.0)
 
-            # 展平并保存
+            # 展平
             flat_imgs = averaged_img.cpu().numpy().reshape(averaged_img.shape[0], -1)
             all_denoised_images.append(flat_imgs)
 
     final_data = np.concatenate(all_denoised_images, axis=0)
-    print(f"💾 Saving final TTA results to {output_filename}...")
+    print(f" Saving final TTA results to {output_filename}...")
     df = pd.DataFrame(final_data)
     df.to_csv(output_filename, index=False, header=False)
-    print("✅ Submission file generated successfully!")
+    print(" Submission file generated successfully!")
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -101,23 +100,20 @@ def main(cfg: DictConfig):
     # --- 模型初始化 ---
     model = ConditionalDDPM(cfg)
 
-    # --- 2. 配置回调函数 (关键修改) ---
-
 
     early_stop_callback = EarlyStopping(
-        monitor="val_mse",  # 监控的指标 (必须在 validation_step 里 log 过)
-        min_delta=0.00,  # 哪怕只降一点点也算下降
-        patience=10,  # 容忍几次？(你的要求是 5)
-        verbose=True,  # 触发时打印日志
-        mode="min"  # 我们希望 loss 越小越好
+        monitor="val_mse_image",
+        min_delta=0.00,
+        patience=10,
+        verbose=True,
+        mode="min"
     )
 
-    # B. 模型检查点：自动保存 val_loss 最低的那一个模型，而不是最后的一个
     checkpoint_callback = ModelCheckpoint(
-        monitor="val_mse",
+        monitor="val_mse_image",
         dirpath="checkpoints",
         filename="best-model-{epoch:02d}-{val_mse:.4f}",
-        save_top_k=1,  # 只保留最好的 1 个
+        save_top_k=1,
         mode="min"
     )
 
@@ -134,28 +130,24 @@ def main(cfg: DictConfig):
     # 开始训练
     trainer.fit(model, train_loader, val_loader)
 
-    # --- 训练结束 ---
+    # 训练结束
     print("\n" + "=" * 40)
-    print("🎉 Training Finished (or Early Stopped)!")
+    print("Training Finished (or Early Stopped)!")
 
-    # 加载验证集表现最好的模型来做最后的测试，而不是最后一步的模型
     best_model_path = checkpoint_callback.best_model_path
     if best_model_path:
-        print(f"🏆 Loading Best Model from: {best_model_path}")
+        print(f"Loading Best Model from: {best_model_path}")
         model = ConditionalDDPM.load_from_checkpoint(best_model_path)
-    print("\n📊 Calculating Best Validation MSE (Local Benchmark)...")
+    print("\nCalculating Best Validation MSE (Local Benchmark)...")
     val_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(val_device)
     model.eval()
 
-    # 使用 Trainer 的 validate 方法直接算 Loss (即 MSE)
-    # verbose=True 会直接把结果打印在控制台
     val_result = trainer.validate(model, val_loader, verbose=True)
 
-    # 提取分数并打印大字报
     final_mse = val_result[0]['val_loss']
     print(f"\n" + "=" * 40)
-    print(f"🥇 Final Best Validation MSE: {final_mse:.6f}")
+    print(f" Final Best Validation MSE: {final_mse:.6f}")
     print("=" * 40 + "\n")
 
     generate_benchmark_csv(model, cfg, output_filename="final_submission.csv")

@@ -27,12 +27,13 @@ def main(cfg: DictConfig):
     # 搜索 .ckpt 文件
     list_of_files = glob.glob(os.path.join(ckpt_dir, '*.ckpt'))
     if not list_of_files:
-        print(f"❌ 错误: 在 {ckpt_dir} 下没找到任何 .ckpt 模型文件！")
+        print(f" 错误: 在 {ckpt_dir} 下没找到任何 .ckpt 模型文件！")
         return
 
     # 找最新的那个
-    latest_ckpt = max(list_of_files, key=os.path.getctime)
-    print(f"🚀 正在加载模型: {latest_ckpt}")
+    # latest_ckpt = max(list_of_files, key=os.path.getctime)
+    latest_ckpt = "checkpoints/best-model-epoch=43-val_mse=0.0228.ckpt"
+    print(f" 正在加载模型: {latest_ckpt}")
 
     # ==========================================
     # 2. 加载模型
@@ -43,14 +44,13 @@ def main(cfg: DictConfig):
     model.eval()
 
     # ==========================================
-    # 3. 加载数据 (严格匹配你的 yaml 键名)
+    # 3. 加载数据
     # ==========================================
-    # 使用 to_absolute_path 处理 yaml 里的相对路径
-    # 你的 yaml 里叫 train_path 和 clean_path
+
     noisy_path = to_absolute_path(cfg.data.train_path)
     clean_path = to_absolute_path(cfg.data.clean_path)
 
-    print(f"📂 读取数据: {noisy_path}")
+    print(f" 读取数据: {noisy_path}")
 
     # 使用训练集模式，因为只有训练集才有 Clean 图片做对比
     dataset = FashionMNISTDenoisingDataset(
@@ -66,7 +66,7 @@ def main(cfg: DictConfig):
     # 随机选几张图
     indices = random.sample(range(len(dataset)), num_samples)
 
-    print(f"🎨 正在生成 {num_samples} 组对比图...")
+    print(f" 正在生成 {num_samples} 组对比图...")
 
     plt.figure(figsize=(12, 4 * num_samples))
 
@@ -112,7 +112,7 @@ def main(cfg: DictConfig):
     # 保存结果到项目根目录
     save_path = os.path.join(orig_cwd, "result_visualization.png")
     plt.savefig(save_path)
-    print(f"✅ 可视化结果已保存至: {save_path}")
+    print(f" 可视化结果已保存至: {save_path}")
 
     # 如果你在本地运行，可以取消注释下面这行直接显示
     # plt.show()

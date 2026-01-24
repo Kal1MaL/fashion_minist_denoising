@@ -107,42 +107,40 @@ class EmbedFC(nn.Module):
 
 
 class SimpleUNet(nn.Module):
-    def __init__(self, in_channels, base_channels=32, n_downs=2):
+    def __init__(self, in_channels, base_channels=32, n_downs=2, use_class_head=True, use_sigma_emb=True):
         super(SimpleUNet, self).__init__()
+
+        self.use_class_head = use_class_head
+        self.use_sigma_emb = use_sigma_emb  # <--- 记录开关
 
         n_feat = base_channels
         self.in_channels = in_channels
         self.n_downs = n_downs
 
         self.init_conv = ResidualConvBlock(in_channels, n_feat, is_res=True)
-
         self.down_blocks = nn.ModuleList()
         for i in range(n_downs):
             self.down_blocks.append(UNetDown(2 ** i * n_feat, 2 ** (i + 1) * n_feat))
 
-        # Bottleneck processing
         self.to_vec = nn.Sequential(nn.AvgPool2d(7), nn.GELU())
         self.up0 = nn.Sequential(
             nn.ConvTranspose2d(2 ** n_downs * n_feat, 2 ** n_downs * n_feat, 7, 1, 0),
             nn.GroupNorm(8, 2 ** n_downs * n_feat),
             nn.GELU()
         )
-
-        # Attention at Bottleneck
         self.mid_attn = AttentionBlock(2 ** n_downs * n_feat)
 
-        # --- [NEW] Auxiliary Classification Head ---
-        # 强制 Bottleneck 学习语义特征
-        # Feature dim = base_channels * 2^n_downs (e.g., 32 * 4 = 128)
-        feature_dim = (2 ** n_downs) * base_channels
-        self.class_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # Pooling -> (B, C, 1, 1)
-            nn.Flatten(),  # Flatten -> (B, C)
-            nn.Linear(feature_dim, 128),  # Projection
-            nn.GELU(),
-            nn.Linear(128, 10)  # Output: 10 Classes
-        )
-        # -------------------------------------------
+        if self.use_class_head:
+            feature_dim = (2 ** n_downs) * base_channels
+            self.class_head = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(feature_dim, 128),
+                nn.GELU(),
+                nn.Linear(128, 10)
+            )
+        else:
+            self.class_head = None
 
         self.up_blocks = nn.ModuleList()
         for i in range(n_downs, 0, -1):
@@ -154,18 +152,18 @@ class SimpleUNet(nn.Module):
             nn.GELU(),
             nn.Conv2d(n_feat, 1, 1, 1)
         )
-
-        # Time Embeddings
         self.timeembs = nn.ModuleList([EmbedFC(1, 2 ** i * n_feat) for i in range(n_downs, 0, -1)])
 
-        # Sigma Embeddings (for Noise Level)
-        self.sigmaembs = nn.ModuleList([EmbedFC(1, 2 ** i * n_feat) for i in range(n_downs, 0, -1)])
+        if self.use_sigma_emb:
+            self.sigmaembs = nn.ModuleList([EmbedFC(1, 2 ** i * n_feat) for i in range(n_downs, 0, -1)])
+        else:
+            self.sigmaembs = None
+
 
     def forward(self, x, t, condition, sigma):
-        # Concatenate noisy image and condition (original noisy input)
+        # ... (Encode 保持不变) ...
         x = torch.cat([x, condition], dim=1)
         x = self.init_conv(x)
-
         downs = []
         for i, down_block in enumerate(self.down_blocks):
             if i == 0:
@@ -173,24 +171,27 @@ class SimpleUNet(nn.Module):
             else:
                 downs.append(down_block(downs[-1]))
 
-        # Bottleneck
         up = self.up0(self.to_vec(downs[-1]))
-
-        # Apply Attention
         up = self.mid_attn(up)
 
-        # --- [NEW] Classification Branch ---
-        # 利用 Bottleneck 特征进行分类预测
-        class_logits = self.class_head(up)
-        # -----------------------------------
+        class_logits = None
+        if self.use_class_head:
+            class_logits = self.class_head(up)
 
-        # Decoder Loop with Time & Sigma Conditioning
-        for up_block, down, timeemb, sigmaemb in zip(self.up_blocks, downs[::-1], self.timeembs, self.sigmaembs):
-            t_e = timeemb(t)  # Time embedding
-            s_e = sigmaemb(sigma)  # Sigma embedding
 
-            # Combine features + time + sigma
+        if self.sigmaembs is None:
+            sigma_iterator = [None] * len(self.up_blocks)
+        else:
+            sigma_iterator = self.sigmaembs
+
+        for up_block, down, timeemb, sigmaemb in zip(self.up_blocks, downs[::-1], self.timeembs, sigma_iterator):
+            t_e = timeemb(t)
+
+            if sigmaemb is not None:
+                s_e = sigmaemb(sigma)
+            else:
+                s_e = 0
+
             up = up_block(up + t_e + s_e, down)
 
-        # Return both Predicted Noise AND Class Logits
         return self.final_conv(torch.cat([up, x], axis=1)), class_logits

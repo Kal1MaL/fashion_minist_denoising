@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 import math
@@ -12,12 +11,35 @@ class ConditionalDDPM(pl.LightningModule):
         self.save_hyperparameters()
         self.cfg = cfg
 
-        # 初始化模型 (Residual-UNet + Attention + Sigma + ClassHead)
-        # 确保 network.py 里的 SimpleUNet forward 返回 (noise, logits)
-        self.model = SimpleUNet(in_channels=2, base_channels=cfg.model.channels)
+        # 1. 判断模式
+        # 现有模式: "baseline" | "sigma" | "ours"
+        self.mode = cfg.model.get("mode", "ours")
+
+        # 配置开关
+        if self.mode == "ours":
+            use_class_head = True
+            use_sigma_emb = True
+            self.use_curriculum = True
+        elif self.mode == "sigma":
+            # 【新增模式】: 只有 Sigma，没有分类头，没有课程学习
+            use_class_head = False
+            use_sigma_emb = True
+            self.use_curriculum = False
+        else:  # baseline
+            use_class_head = False
+            use_sigma_emb = False
+            self.use_curriculum = False
+
+        # 2. 传参给 Network
+        self.model = SimpleUNet(
+            in_channels=2,
+            base_channels=cfg.model.channels,
+            use_class_head=use_class_head,
+            use_sigma_emb=use_sigma_emb
+        )
         self.timesteps = cfg.model.timesteps
 
-        # --- Cosine Schedule 设置 ---
+        # ... (Cosine Schedule 部分保持不变) ...
         def cosine_beta_schedule(timesteps, s=0.008):
             steps = timesteps + 1
             x = torch.linspace(0, timesteps, steps)
@@ -27,11 +49,9 @@ class ConditionalDDPM(pl.LightningModule):
             return torch.clip(betas, 0.0001, 0.9999)
 
         beta = cosine_beta_schedule(self.timesteps)
-
         alpha = 1. - beta
         alpha_bar = torch.cumprod(alpha, dim=0)
 
-        # 注册缓冲区 (不作为参数更新，但随模型保存)
         self.register_buffer("sqrt_alpha_bar", torch.sqrt(alpha_bar))
         self.register_buffer("sqrt_one_minus_alpha_bar", torch.sqrt(1. - alpha_bar))
         self.register_buffer("beta", beta)
@@ -42,165 +62,160 @@ class ConditionalDDPM(pl.LightningModule):
         return self.model(x_noisy, t, condition, sigma)
 
     def _common_step(self, batch, batch_idx, stage='train'):
-        """
-        统一的训练/验证步逻辑，包含 Curriculum Learning (课程学习)
-        stage: 'train' 或 'val'
-        """
         condition, clean_img, labels = batch
         batch_size = clean_img.shape[0]
-
-        # 1. 计算 Sigma (用于 Condition)
         current_sigma = condition.std(dim=(1, 2, 3), keepdim=True)
 
         # ====================================================
-        # 🔥 课程学习：动态难度调度器 (Dynamic Difficulty Slider)
+        # 🎲 t 采样策略
         # ====================================================
+        if not self.use_curriculum:
+            # 【Baseline / Sigma】: 没有任何花里胡哨，直接全范围随机
+            t = torch.randint(0, self.timesteps, (batch_size,), device=self.device)
 
-        warmup_epochs = 5  # 前5轮：预热（只看原图，练分类）
-        rampup_length = 10  # 接下来的10轮：爬坡（难度逐渐增加）
-        full_start_epoch = warmup_epochs + rampup_length  # 第15轮开始：完全体
+        else:
+            # 【Ours】: 课程学习 (Curriculum Learning)
+            warmup_epochs = 5
+            rampup_length = 10
+            full_start_epoch = warmup_epochs + rampup_length
 
-        max_t_limit = self.timesteps  # 默认最大难度
-
-        if stage == 'val':
-            # 【验证集策略】
-            # 验证集必须始终诚实，测试全范围难度，这样才能通过 val_mse 看出真实水平
             max_t_limit = self.timesteps
+            if stage == 'train':
+                if self.current_epoch < warmup_epochs:
+                    max_t_limit = 0
+                elif self.current_epoch < full_start_epoch:
+                    progress = (self.current_epoch - warmup_epochs) / rampup_length
+                    max_t_limit = int(progress * self.timesteps)
+                    max_t_limit = max(10, max_t_limit)
 
-        else:
-            # 【训练集策略】
-            if self.current_epoch < warmup_epochs:
-                # 阶段一：预热 (Warm-up)
-                # 强制 t=0，让模型先在无噪图上学会分类，打通 Encoder
-                max_t_limit = 0
-
-            elif self.current_epoch < full_start_epoch:
-                # 阶段二：爬坡 (Ramp-up)
-                # t 的上限随着 epoch 线性增加
-                progress = (self.current_epoch - warmup_epochs) / rampup_length
-                max_t_limit = int(progress * self.timesteps)
-                max_t_limit = max(10, max_t_limit)  # 至少保留一点点难度
-
+            if max_t_limit == 0:
+                t = torch.zeros((batch_size,), device=self.device, dtype=torch.long)
             else:
-                # 阶段三：完全体 (Full)
-                # 火力全开，随机采样 [0, 1000]
-                max_t_limit = self.timesteps
+                t = torch.randint(0, max_t_limit, (batch_size,), device=self.device)
 
         # ====================================================
-        # 🎲 采样时间步 t
+        # 加噪与前向
         # ====================================================
-
-        if max_t_limit == 0:
-            # 作弊模式：纯净图
-            t = torch.zeros((batch_size,), device=self.device, dtype=torch.long)
-        else:
-            # 正常/爬坡模式：在允许的范围内随机采样
-            t = torch.randint(0, max_t_limit, (batch_size,), device=self.device)
-
-        # 2. 加噪过程
         noise = torch.randn_like(clean_img)
         x_t = (
                 self.sqrt_alpha_bar[t, None, None, None] * clean_img +
                 self.sqrt_one_minus_alpha_bar[t, None, None, None] * noise
         )
-
-        # 归一化时间步
         t_float = t.float() / self.timesteps
 
-        # 3. 模型前向传播
         predicted_noise, class_logits = self.model(x_t, t_float, condition, current_sigma)
 
-        # 4. 计算 Loss
-        # Loss A: 去噪 (MSE)
+        # ====================================================
+        # Loss 计算
+        # ====================================================
         noise_loss = F.mse_loss(predicted_noise, noise)
 
-        # Loss B: 分类 (CrossEntropy)
-        # 因为我们已经限制了 max_t，所以在当前难度下，所有样本都应该尝试分类
-        loss_mask = torch.ones_like(t, dtype=torch.float)
-        raw_class_loss = F.cross_entropy(class_logits, labels, reduction='none')
+        if not self.use_curriculum:
+            # 【Baseline / Sigma】: 只看去噪，不管分类
+            # 即使 model 输出了 logits (实际上如果是 sigma 模式也不会输出)，我们也不算它的 loss
+            total_loss = noise_loss
+            class_loss = torch.tensor(0.0, device=self.device)
 
-        # 避免除以 0 的安全措施
-        valid_samples = loss_mask.sum()
-        if valid_samples > 0:
-            class_loss = (raw_class_loss * loss_mask).sum() / valid_samples
         else:
-            class_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+            # 【Ours】: 双头 Loss + 动态权重
+            loss_mask = torch.ones_like(t, dtype=torch.float)
+            if class_logits is not None:
+                raw_class_loss = F.cross_entropy(class_logits, labels, reduction='none')
+                if loss_mask.sum() > 0:
+                    class_loss = (raw_class_loss * loss_mask).sum() / loss_mask.sum()
+                else:
+                    class_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+            else:
+                class_loss = torch.tensor(0.0, device=self.device)
 
-        # 5. 总 Loss 动态权重分配
-        if self.current_epoch < 5:
-            # [阶段1] 预热：只看分类
-            total_loss = 5.0 * class_loss
-        elif self.current_epoch < 15:
-            # [阶段2] 协同：分类辅助去噪
-            total_loss = noise_loss + 1.0 * class_loss
-        else:
-            # [阶段3] 冲刺：分类滚粗，全力去噪！
-            # 把权重降到 0.01 甚至 0，让梯度完全由 MSE 主导
-            total_loss = noise_loss + 0.01 * class_loss
+            # 动态权重逻辑
+            warmup_epochs = 5
+            if self.current_epoch < warmup_epochs:
+                if stage == 'train':
+                    total_loss = 5.0 * class_loss
+                else:
+                    total_loss = noise_loss + class_loss
+            elif self.current_epoch < 20:
+                total_loss = noise_loss + 1.0 * class_loss
+            else:
+                total_loss = noise_loss + 0.05 * class_loss
 
         return total_loss, noise_loss, class_loss
 
     def training_step(self, batch, batch_idx):
-        # 必须传入 stage='train' 以启用 Curriculum Learning
         total_loss, noise_loss, class_loss = self._common_step(batch, batch_idx, stage='train')
-
         self.log("train_loss", total_loss, prog_bar=True)
         self.log("train_mse", noise_loss, prog_bar=True)
-        self.log("train_cls", class_loss, prog_bar=True)
-
+        if self.mode == "ours":
+            self.log("train_cls", class_loss, prog_bar=True)
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        # 必须传入 stage='val' 以禁用作弊，确保 val_mse 真实
+        # 1. 获取常规 Loss (Noise MSE)
         total_loss, noise_loss, class_loss = self._common_step(batch, batch_idx, stage='val')
 
+        # 2. 计算 Image MSE
+        condition, clean_img, labels = batch
+        batch_size = clean_img.shape[0]
+
+        # 随机采样一个 t 用于验证
+        t = torch.randint(0, self.timesteps, (batch_size,), device=self.device)
+        noise = torch.randn_like(clean_img)
+
+        # 构造 x_t
+        x_t = (
+                self.sqrt_alpha_bar[t, None, None, None] * clean_img +
+                self.sqrt_one_minus_alpha_bar[t, None, None, None] * noise
+        )
+        t_float = t.float() / self.timesteps
+        current_sigma = condition.std(dim=(1, 2, 3), keepdim=True)
+
+        # 预测噪声
+        predicted_noise, _ = self.model(x_t, t_float, condition, current_sigma)
+
+        # === 利用 DDPM 公式从 x_t 和 predicted_noise 逆推 x_0 (Pred Image) ===
+        # x_0 = (x_t - sqrt(1-alpha_bar) * eps) / sqrt(alpha_bar)
+        sqrt_alpha_bar_t = self.sqrt_alpha_bar[t, None, None, None]
+        sqrt_one_minus_alpha_bar_t = self.sqrt_one_minus_alpha_bar[t, None, None, None]
+
+        pred_x0 = (x_t - sqrt_one_minus_alpha_bar_t * predicted_noise) / sqrt_alpha_bar_t
+        pred_x0 = torch.clamp(pred_x0, 0, 1)  # 像素截断
+
+        # 计算图像 MSE
+        real_image_mse = F.mse_loss(pred_x0, clean_img)
+
+        # 记录日志
         self.log("val_loss", total_loss, prog_bar=True, sync_dist=True)
-        # 🔥 ModelCheckpoint 监控这个指标
-        self.log("val_mse", noise_loss, prog_bar=True, sync_dist=True)
+        self.log("val_mse_epsilon", noise_loss, prog_bar=True, sync_dist=True)
+        self.log("val_mse_image", real_image_mse, prog_bar=True, sync_dist=True)
 
         return total_loss
 
     def configure_optimizers(self):
-        # 1. 定义优化器
         optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr)
-
-        # 2. 定义 One Cycle LR 调度器
-        # max_lr: 也就是我们在 config 里设定的 1e-3
-        # total_steps: 自动计算总步数 (steps_per_epoch * epochs)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=self.cfg.training.lr,
             total_steps=self.trainer.estimated_stepping_batches,
-            pct_start=0.3,  # 前 30% 时间用来热身 (Warm-up)
-            div_factor=25,  # 初始 LR = max_lr / 25
-            final_div_factor=1e4  # 最终 LR 极其微小，利于收敛
+            pct_start=0.3,
+            div_factor=25,
+            final_div_factor=1e4
         )
-
-        # 3. 返回 Lightning 要求的格式
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step"  # 必须是 step 级更新，不是 epoch 级
-            }
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"}
         }
 
     @torch.no_grad()
     def sample(self, condition):
-        """
-        生成/推理函数
-        """
         b, c, h, w = condition.shape
         img = torch.randn((b, c, h, w), device=self.device)
-
-        # 推理时也需要计算 Sigma
         current_sigma = condition.std(dim=(1, 2, 3), keepdim=True)
 
         for i in reversed(range(self.timesteps)):
             t = torch.full((b,), i, device=self.device, dtype=torch.long)
             t_float = t.float() / self.timesteps
 
-            # 推理时只需要 predicted_noise，忽略 class_logits
             predicted_noise, _ = self.model(img, t_float, condition, current_sigma)
 
             alpha = self.alpha[i]
@@ -215,8 +230,6 @@ class ConditionalDDPM(pl.LightningModule):
             img = (1 / torch.sqrt(alpha)) * (
                     img - ((1 - alpha) / (torch.sqrt(1 - alpha_bar))) * predicted_noise
             ) + torch.sqrt(beta) * noise
-
-            # Clipping 防止数值爆炸
             img = torch.clamp(img, -1.0, 1.0)
 
         img = torch.clamp(img, 0.0, 1.0)

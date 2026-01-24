@@ -46,7 +46,7 @@ def visualize_comparison(noisy_path, result_path, num_samples=5, save_path="deno
 
     plt.tight_layout()
     plt.savefig(save_path)
-    print(f"\n✅ 可视化完成！图片已保存为: {save_path}")
+    print(f"\n 可视化完成！图片已保存为: {save_path}")
     print("请在文件浏览器中打开该图片查看效果。")
 
 
