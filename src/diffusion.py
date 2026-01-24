@@ -127,18 +127,16 @@ class ConditionalDDPM(pl.LightningModule):
             class_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
         # 5. 总 Loss 动态权重分配
-        if self.current_epoch < warmup_epochs:
-            # 预热期：全力搞分类，Total Loss 由分类主导
-            # 如果是 train 阶段，我们甚至可以完全忽略 MSE
-            # 但如果是 val 阶段，我们需要计算 MSE 来记录日志(虽然很大)
-            if stage == 'train':
-                total_loss = 5.0 * class_loss
-            else:
-                total_loss = noise_loss + class_loss
-        else:
-            # 爬坡期 & 完全体：分类已成型，MSE 权重回归
-            # 1.0 的分类权重用于维持语义理解
+        if self.current_epoch < 5:
+            # [阶段1] 预热：只看分类
+            total_loss = 5.0 * class_loss
+        elif self.current_epoch < 15:
+            # [阶段2] 协同：分类辅助去噪
             total_loss = noise_loss + 1.0 * class_loss
+        else:
+            # [阶段3] 冲刺：分类滚粗，全力去噪！
+            # 把权重降到 0.01 甚至 0，让梯度完全由 MSE 主导
+            total_loss = noise_loss + 0.01 * class_loss
 
         return total_loss, noise_loss, class_loss
 

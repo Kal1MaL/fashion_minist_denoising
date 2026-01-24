@@ -7,7 +7,7 @@ training:
 
 model:
   timesteps: 1000
-  channels: 32         # 回滚：先用 32 通道验证 Attention 是否有效
+  channels: 64         # 回滚：先用 32 通道验证 Attention 是否有效
   dim_mults: [1, 2, 4]
 data:
   train_path: "data/fashion-mnist_noisy_train.csv"
