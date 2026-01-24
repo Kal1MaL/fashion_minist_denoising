@@ -108,7 +108,7 @@ class ConditionalDDPM(pl.LightningModule):
         # ====================================================
         # Loss 计算
         # ====================================================
-        noise_loss = F.mse_loss(predicted_noise, noise)
+        noise_loss = F.smooth_l1_loss(predicted_noise, noise, beta=0.1)
 
         if not self.use_curriculum:
             # 【Baseline / Sigma】: 只看去噪，不管分类
