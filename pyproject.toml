@@ -1,0 +1,29 @@
+[project]
+name = "fashion-denoising"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "hydra-core>=1.3.2",
+    "ipykernel>=7.1.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "pytorch-lightning>=2.6.0",
+    "scikit-learn>=1.7.2",
+    "torch==2.5.1",
+    "sympy==1.13.1",
+
+]
+# 1. 定义 PyTorch 的官方 CUDA 12.1 仓库
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true  # 关键：标记为显式源，不让其他无关包来这里乱找
+
+# 2. 锁定这两个包必须从上面的 'pytorch' 仓库下载
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchaudio = { index = "pytorch" }

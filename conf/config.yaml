@@ -1,0 +1,16 @@
+training:
+  batch_size: 64       # 回滚：改回 64，稳一点
+  lr: 1e-3           # 回滚：改回 2e-4。这个是经过验证的黄金数值！
+  epochs: 50           # 保持 50
+  accelerator: "auto"
+  devices: "auto"
+
+model:
+  timesteps: 1000
+  channels: 32         # 回滚：先用 32 通道验证 Attention 是否有效
+  dim_mults: [1, 2, 4]
+data:
+  train_path: "data/fashion-mnist_noisy_train.csv"
+  clean_path: "data/fashion-mnist_normalised_train.csv"
+  test_path: "data/fashion-mnist_noisy_test.csv"
+  val_split: 0.1
