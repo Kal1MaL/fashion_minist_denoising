@@ -1,10 +1,14 @@
+import os
+import glob
 import hydra
+from hydra.utils import get_original_cwd
 from omegaconf import DictConfig
 import torch
 import pandas as pd
 import numpy as np
 from torch.utils.data import DataLoader, random_split
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from tqdm import tqdm
 
@@ -77,6 +81,35 @@ def generate_benchmark_csv(model, cfg, output_filename="submission.csv"):
     print(" Submission file generated successfully!")
 
 
+class DetailedMetricsCallback(Callback):
+    def on_validation_epoch_end(self, trainer, pl_module):
+        # 获取所有 logged 的指标 (包括 prog_bar=False 的)
+        metrics = trainer.callback_metrics
+
+        # 准备打印字符串
+        print_msg = f"\nEpoch {trainer.current_epoch}:"
+
+        # 分类打印 Train 和 Val 指标
+        train_metrics = []
+        val_metrics = []
+
+        for k, v in metrics.items():
+            val = v.item() if isinstance(v, torch.Tensor) else v
+            if "val" in k:
+                val_metrics.append(f"{k}: {val:.5f}")
+            elif "train" in k:
+                train_metrics.append(f"{k}: {val:.5f}")
+
+        # 格式化多行输出
+        if train_metrics:
+            print_msg += f"\n  [Train] " + " | ".join(train_metrics)
+        if val_metrics:
+            print_msg += f"\n  [Val]   " + " | ".join(val_metrics)
+
+        # 打印 (tqdm 会自动处理 print，不会打断进度条)
+        print(print_msg + "\n")
+
+
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
     pl.seed_everything(42)
@@ -100,11 +133,13 @@ def main(cfg: DictConfig):
     # --- 模型初始化 ---
     model = ConditionalDDPM(cfg)
 
+    metrics_callback = DetailedMetricsCallback()
+
 
     early_stop_callback = EarlyStopping(
         monitor="val_mse_image",
         min_delta=0.00,
-        patience=10,
+        patience=15,
         verbose=True,
         mode="min"
     )
@@ -112,7 +147,7 @@ def main(cfg: DictConfig):
     checkpoint_callback = ModelCheckpoint(
         monitor="val_mse_image",
         dirpath="checkpoints",
-        filename="best-model-{epoch:02d}-{val_mse:.4f}",
+        filename="best-model-{epoch:02d}-{val_mse_image:.4f}",
         save_top_k=1,
         mode="min"
     )
@@ -121,14 +156,32 @@ def main(cfg: DictConfig):
     trainer = pl.Trainer(
         max_epochs=cfg.training.epochs,
         accelerator=cfg.training.accelerator,
-        callbacks=[early_stop_callback, checkpoint_callback],
+        callbacks=[early_stop_callback, checkpoint_callback, metrics_callback],
         enable_checkpointing=True,
         log_every_n_steps=10,
         check_val_every_n_epoch=1
     )
 
-    # 开始训练
-    trainer.fit(model, train_loader, val_loader)
+    resume_path = None
+
+    # 获取原始目录下的 checkpoints 文件夹
+    ckpt_dir = os.path.join(get_original_cwd(), "checkpoints")
+
+    # 搜索所有 .ckpt 文件
+    if os.path.exists(ckpt_dir):
+        list_of_files = glob.glob(os.path.join(ckpt_dir, '*.ckpt'))
+
+        if list_of_files:
+            # 找到最后修改时间最新的那个文件
+            latest_ckpt = max(list_of_files, key=os.path.getctime)
+            print(f"\n🚀 检测到 Checkpoint，准备从断点恢复: {latest_ckpt}")
+            print("   (如果不希望续训，请手动删除 checkpoints 文件夹或修改代码)\n")
+            # resume_path = latest_ckpt
+            resume_path = None
+
+    # 开始训练 (传入 ckpt_path 即可实现续训)
+    # 如果 resume_path 是 None，它就会从头开始
+    trainer.fit(model, train_loader, val_loader, ckpt_path=resume_path)
 
     # 训练结束
     print("\n" + "=" * 40)

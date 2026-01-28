@@ -1,14 +1,13 @@
 training:
   batch_size: 64
   lr: 0.001
-  epochs: 50
+  epochs: 100
   accelerator: "auto"
   devices: "auto"
 
 model:
   # 可选值: "ours" (你的双头+课程学习) all | "baseline" (普通DDPM) | 'sigma' baseline + sigma conditioning
   mode: "ours"
-
   timesteps: 1000
   channels: 64
   dim_mults: [1, 2, 4]
