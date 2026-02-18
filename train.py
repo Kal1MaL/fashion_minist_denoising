@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from src.dataset import FashionMNISTDenoisingDataset
 from src.diffusion import ConditionalDDPM
+from src.unet import RegressionUNet
 
 
 def generate_benchmark_csv(model, cfg, output_filename="submission.csv"):
@@ -131,7 +132,8 @@ def main(cfg: DictConfig):
                             persistent_workers=True)
 
     # --- 模型初始化 ---
-    model = ConditionalDDPM(cfg)
+    # model = ConditionalDDPM(cfg)
+    model = RegressionUNet(lr=cfg.training.lr)
 
     metrics_callback = DetailedMetricsCallback()
 

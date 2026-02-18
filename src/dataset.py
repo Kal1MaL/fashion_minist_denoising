@@ -61,10 +61,6 @@ class FashionMNISTDenoisingDataset(Dataset):
             clean_img = self.clean_data[idx].reshape(1, 28, 28)
             clean_img = torch.tensor(clean_img, dtype=torch.float32)
 
-            # 2. 归一化 (如果是 0-255 的数据，记得除以 255；如果已经是小数则不用)
-            # 注意：你之前的代码似乎删掉了 /255.0，请根据 csv 实际内容确认
-            # clean_img = clean_img / 255.0
-
             # 3. 🔥 注入高斯噪声 (模拟真实场景)
             # 这里的 0.154 是你之前算出的数据集平均 sigma，或者你可以设别的强度
             noise = torch.randn_like(clean_img) * 0.154

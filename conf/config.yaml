@@ -14,6 +14,6 @@ model:
 
 data:
   train_path: "data/fashion-mnist_noisy_train.csv"
-  clean_path: "data/fashion-mnist_normalised_train.csv"
+  clean_path: "data/fashion-mnist_clean_train.csv"
   test_path: "data/fashion-mnist_noisy_test.csv"
   val_split: 0.1

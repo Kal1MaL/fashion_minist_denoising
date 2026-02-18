@@ -11,6 +11,7 @@ from hydra.utils import to_absolute_path, get_original_cwd
 # 引入你的 Dataset 和 Model 类
 from src.dataset import FashionMNISTDenoisingDataset
 from src.diffusion import ConditionalDDPM
+from src.unet import RegressionUNet
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -25,7 +26,7 @@ def main(cfg: DictConfig):
     ckpt_dir = os.path.join(orig_cwd, "checkpoints")
 
     # 🔥 建议修改：指定你刚刚训练出的最佳模型（30~40 epoch 或最新修复后的）
-    manual_ckpt = "checkpoints/best-model-epoch=96-val_mse_image=0.0043.ckpt"  # <--- 修改这里文件名
+    manual_ckpt = "b"  # <--- 修改这里文件名
 
     # 路径拼接
     ckpt_path = os.path.join(orig_cwd, manual_ckpt)
@@ -47,7 +48,7 @@ def main(cfg: DictConfig):
     # ==========================================
     # strict=False 有助于忽略掉一些不匹配的 key (防止之前改结构留下的缓存问题)
     # 但由于我们结构改动大，最好还是 strict=True 确保加载正确
-    model = ConditionalDDPM.load_from_checkpoint(ckpt_path, cfg=cfg, strict=True)
+    model = RegressionUNet.load_from_checkpoint(ckpt_path, cfg=cfg, strict=False)
     model.to(device)
     model.eval()
 
@@ -56,8 +57,8 @@ def main(cfg: DictConfig):
     # ==========================================
     test_path = to_absolute_path(cfg.data.test_path)
     dataset = FashionMNISTDenoisingDataset(
-        noisy_csv=None,
-        clean_csv=test_path,
+        noisy_csv="data/fashion-mnist_noisy_test.csv",
+        clean_csv="data/fashion-mnist_clean_test.csv",
         mode='test',
         synthesize_noise=True
     )
