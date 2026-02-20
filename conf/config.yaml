@@ -1,19 +1,12 @@
-training:
-  batch_size: 64
-  lr: 0.001
-  epochs: 100
-  accelerator: "auto"
-  devices: "auto"
+defaults:
+  - _self_
+  - model: dit_pmf
+  - data: fashion_mnist   # 对应我们上一轮写的 DataModule
 
-model:
-  # 可选值: "ours" (你的双头+课程学习) all | "baseline" (普通DDPM) | 'sigma' baseline + sigma conditioning
-  mode: "ours"
-  timesteps: 1000
-  channels: 64
-  dim_mults: [1, 2, 4]
+trainer:
+  max_epochs: 160
+  accelerator: "gpu"
+  devices: 1
+  precision: "16-mixed"   # 开启混合精度加速
 
-data:
-  train_path: "data/fashion-mnist_noisy_train.csv"
-  clean_path: "data/fashion-mnist_clean_train.csv"
-  test_path: "data/fashion-mnist_noisy_test.csv"
-  val_split: 0.1
+experiment_name: "pmf_dit_rope_hybrid_data2data"
