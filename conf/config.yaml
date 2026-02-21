@@ -6,7 +6,9 @@ defaults:
 trainer:
   max_epochs: 160
   accelerator: "gpu"
-  devices: 1
-  precision: "16-mixed"   # 开启混合精度加速
+  devices: 2
+  precision: "bf16-mixed" # 开启混合精度加速
+  gradient_clip_val: 1.0     # <--- 加上这一行！限制全局梯度范数最大为 1
+  gradient_clip_algorithm: "norm"
 
 experiment_name: "pmf_dit_rope_hybrid_data2data"
