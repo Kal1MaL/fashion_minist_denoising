@@ -23,7 +23,7 @@ def main(cfg: DictConfig):
     # 1. 检查 Checkpoint 路径
     # ==========================================
 
-    ckpt_path = r"checkpoints/best-pmf-epoch=156-val_mse=0.00475.ckpt"
+    ckpt_path = r"checkpoints/best-pmf-epoch=159-val_mse=0.00325.ckpt"
     print(f" 正在加载模型权重: {ckpt_path}")
 
     # ==========================================
@@ -55,7 +55,7 @@ def main(cfg: DictConfig):
     vis_y_noisy, vis_x_pred, vis_x_clean = None, None, None
     num_vis_samples = 10  # 我们选 10 张图画并排对比图
 
-    print("⏳ 开始在测试集上进行 1-NFE 极速推导...")
+    print("⏳ 开始在测试集上进行极速推导...")
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
             # 将数据推到 GPU
@@ -69,14 +69,16 @@ def main(cfg: DictConfig):
             }
 
             B = y_noisy.shape[0]
-            t_val = torch.ones(B, device=device)  # 1-NFE 一步到位
+
+            # ❌ 删除下面这行，因为模型已经不再需要时间步 t
+            # t_val = torch.ones(B, device=device)
 
             # --- 测速开始 (为了准确测量 GPU 时间，使用 cuda.synchronize) ---
             if device.type == 'cuda': torch.cuda.synchronize()
             start_time = time.time()
 
-            # 极速前向传播
-            x_pred = model(y_noisy, t_val, cond_dict)
+            # ✅ 极速前向传播：只传入噪声图和条件字典
+            x_pred = model(y_noisy, cond_dict)
 
             if device.type == 'cuda': torch.cuda.synchronize()
             end_time = time.time()
@@ -88,6 +90,7 @@ def main(cfg: DictConfig):
             # 累计 MSE
             if x_clean is not None:
                 x_clean = x_clean.to(device)
+                # 注意计算 MSE 前后 shape 保持一致
                 mse = F.mse_loss(x_pred, x_clean, reduction='sum')
                 total_mse += mse.item()
 

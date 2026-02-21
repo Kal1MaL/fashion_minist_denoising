@@ -30,7 +30,7 @@ def main(cfg: DictConfig):
     # 4. 实例化 Trainer 并启动
     trainer = pl.Trainer(
         **cfg.trainer,
-        callbacks=[checkpoint_callback,swa_callback, lr_monitor]
+        callbacks=[checkpoint_callback, lr_monitor]
     )
 
     print("🚀 启动混合先验 pMF-DiT 训练战车...")
