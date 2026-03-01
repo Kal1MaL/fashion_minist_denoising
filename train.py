@@ -18,7 +18,7 @@ def main(cfg: DictConfig):
     # 3. 设置回调函数：自动保存在验证集上 MSE 最低的权重！
     checkpoint_callback = ModelCheckpoint(
         dirpath="checkpoints",
-        filename="best-pmf-{epoch:02d}-{val_mse:.5f}",
+        filename="best-distill-{epoch:02d}-{val_mse:.5f}",
         monitor="val_mse",
         mode="min",
         save_top_k=3

@@ -2,7 +2,7 @@ _target_: src.lightning_module.LitPixelMeanFlow
 in_channels: 3              # 输入通道: z_t, y_blur, y_flip
 img_size: 28
 patch_size: 2
-hidden_dim: 256
+hidden_dim: 384
 depth: 24
 num_heads: 8
 num_classes: 10

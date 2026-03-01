@@ -23,7 +23,7 @@ def main(cfg: DictConfig):
     # 1. 检查 Checkpoint 路径
     # ==========================================
 
-    ckpt_path = r"checkpoints/best-pmf-epoch=159-val_mse=0.00325.ckpt"
+    ckpt_path = r"checkpoints/best-distill-epoch=159-val_mse=0.00322.ckpt"
     print(f" 正在加载模型权重: {ckpt_path}")
 
     # ==========================================
@@ -53,7 +53,7 @@ def main(cfg: DictConfig):
 
     # 用于画图的样本缓存
     vis_y_noisy, vis_x_pred, vis_x_clean = None, None, None
-    num_vis_samples = 10  # 我们选 10 张图画并排对比图
+    num_vis_samples = 20  # 我们选 10 张图画并排对比图
 
     print("⏳ 开始在测试集上进行极速推导...")
     with torch.no_grad():
