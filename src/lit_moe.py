@@ -5,6 +5,7 @@ import pytorch_lightning as pl
 # 导入你的两个异构专家
 from src.lightning_module import LitPixelMeanFlow
 from src.x_predict import XPredictDistiller
+from src.diffusion import ConditionalDDPM
 
 # 导入我们刚刚写好的三种 Router
 from src.moe_routers import SimpleCNNRouter, ResCNNRouter, LightweightDenseRouter
@@ -26,9 +27,9 @@ class LitMoEFusion(pl.LightningModule):
         for param in self.expert_vit.parameters():
             param.requires_grad = False
 
-        # ==========================================
-        # 2. 加载并彻底冻结 Flow 专家 (附带覆写 teacher 路径)
-        # ==========================================
+        # # ==========================================
+        # # 2. 加载并彻底冻结 Flow 专家 (附带覆写 teacher 路径)
+        # # ==========================================
         self.expert_flow = XPredictDistiller.load_from_checkpoint(
             flow_ckpt,
             teacher_ckpt_path=teacher_ckpt,
@@ -37,6 +38,13 @@ class LitMoEFusion(pl.LightningModule):
         self.expert_flow.eval()
         for param in self.expert_flow.parameters():
             param.requires_grad = False
+
+        # print(f"Loading Teacher DDPM from {teacher_ckpt}...")
+        # # 💡 直接用 ConditionalDDPM 加载老师的权重！
+        # self.expert_flow = ConditionalDDPM.load_from_checkpoint(teacher_ckpt,weights_only=False)
+        # self.expert_flow.eval()
+        # for param in self.expert_flow.parameters():
+        #     param.requires_grad = False
 
         # ==========================================
         # 3. 实例化我们唯一需要训练的 Router (门控网络)

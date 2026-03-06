@@ -11,7 +11,7 @@ def visualize_moe(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 加载你的冠军模型
-    moe_ckpt = "checkpoints/moe_routers/moe-resnet-best-epoch=11-val_moe_mse=0.003214.ckpt"
+    moe_ckpt = "checkpoints/moe_routers/moe-dense-best-epoch=10-val_moe_mse=0.003206.ckpt"
     model = LitMoEFusion.load_from_checkpoint(moe_ckpt).to(device).eval()
 
     datamodule = hydra.utils.instantiate(cfg.data)
@@ -46,7 +46,11 @@ def visualize_moe(cfg: DictConfig):
     axes[2].set_title('Flow (Generative)')
 
     # 划重点：画出 Alpha 热力图 (越接近红/黄，代表越偏向 ViT；越接近蓝/深，代表越偏向 Flow)
-    im3 = axes[3].imshow(alpha_map, cmap='jet', vmin=0, vmax=1)
+    # 画出 Flow 模型的出力热力图
+    flow_contribution = 1.0 - alpha_map
+    im3 = axes[3].imshow(flow_contribution, cmap='magma')  # magma 色系非常适合展现能量分布
+    axes[3].set_title('Flow Contribution')
+    fig.colorbar(im3, ax=axes[3], fraction=0.046, pad=0.04)
     axes[3].set_title('Router Alpha Map')
     fig.colorbar(im3, ax=axes[3], fraction=0.046, pad=0.04)
 

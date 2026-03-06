@@ -12,3 +12,24 @@ trainer:
   gradient_clip_algorithm: "norm"
 
 experiment_name: "pmf_dit_rope_hybrid_data2data"
+
+# legacy version cfgs below
+data:
+  train_path: "data/fashion-mnist_noisy_train.csv"
+  clean_path: "data/fashion-mnist_clean_train.csv"
+  test_path: "data/fashion-mnist_noisy_test.csv"
+  val_split: 0.1
+
+training:
+  batch_size: 64
+  lr: 0.001
+  epochs: 150
+  accelerator: "auto"
+  devices: "auto"
+
+model:
+  # 可选值: "ours" (你的双头+课程学习) all | "baseline" (普通DDPM) | 'sigma' baseline + sigma conditioning
+  mode: "ours"
+  timesteps: 1000
+  channels: 64
+  dim_mults: [1, 2, 4]

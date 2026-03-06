@@ -43,7 +43,7 @@ def main(cfg: DictConfig):
     router_type = "resnet"
 
     vit_ckpt = "checkpoints/best-pmf-epoch=159-val_mse=0.00325.ckpt"
-    flow_ckpt = "checkpoints/x-pred-best-epoch=08-val_1step_mse=0.0048.ckpt"
+    flow_ckpt = "checkpoints_distilled/x-pred-best-epoch=130-val_1step_mse=0.0037.ckpt"
     teacher_ckpt = "checkpoints/best-model-epoch=96-val_mse_image=0.0042.ckpt"
 
     print(f"🧠 正在实例化 MoE 模型 (Router: {router_type})...")
