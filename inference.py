@@ -70,14 +70,10 @@ def main(cfg: DictConfig):
 
             B = y_noisy.shape[0]
 
-            # ❌ 删除下面这行，因为模型已经不再需要时间步 t
-            # t_val = torch.ones(B, device=device)
-
             # --- 测速开始 (为了准确测量 GPU 时间，使用 cuda.synchronize) ---
             if device.type == 'cuda': torch.cuda.synchronize()
             start_time = time.time()
 
-            # ✅ 极速前向传播：只传入噪声图和条件字典
             x_pred = model(y_noisy, cond_dict)
 
             if device.type == 'cuda': torch.cuda.synchronize()

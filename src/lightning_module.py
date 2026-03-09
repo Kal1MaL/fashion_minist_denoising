@@ -4,7 +4,6 @@ import pytorch_lightning as pl
 import torchvision.transforms.functional as TF
 import random
 
-# 导入你的纯回归版 DiT 骨干网络
 from src.dit_pmf import DiTPixelMeanFlow
 
 
@@ -15,7 +14,6 @@ class LitPixelMeanFlow(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        # 实例化骨干网络 (移除时间 t，专注图像端到端回归)
         self.net = DiTPixelMeanFlow(
             in_channels=in_channels,
             img_size=img_size,
