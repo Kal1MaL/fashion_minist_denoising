@@ -5,26 +5,34 @@ import torchvision.transforms.functional as TF
 import random
 
 from src.dit_pmf import DiTPixelMeanFlow
-
+from src.baseline_unet import SimpleUNet,ResUNet
 
 class LitPixelMeanFlow(pl.LightningModule):
     def __init__(self, in_channels, img_size, patch_size, hidden_dim,
                  depth, num_heads, num_classes, num_cls_tokens,
-                 learning_rate, drop_path_rate):
+                 learning_rate, drop_path_rate, backbone_type="vit",use_dynamic_aug=True,num_register_tokens=0):
         super().__init__()
         self.save_hyperparameters()
 
-        self.net = DiTPixelMeanFlow(
-            in_channels=in_channels,
-            img_size=img_size,
-            patch_size=patch_size,
-            hidden_dim=hidden_dim,
-            depth=depth,
-            num_heads=num_heads,
-            num_classes=num_classes,
-            num_cls_tokens=num_cls_tokens,
-            drop_path_rate=drop_path_rate,
-        )
+        if backbone_type == "vit":
+            self.net = DiTPixelMeanFlow(
+                in_channels=in_channels,
+                img_size=img_size,
+                patch_size=patch_size,
+                hidden_dim=hidden_dim,
+                depth=depth,
+                num_heads=num_heads,
+                num_classes=num_classes,
+                num_cls_tokens=num_cls_tokens,
+                drop_path_rate=drop_path_rate,
+                num_register_tokens=num_register_tokens
+            )
+        elif backbone_type == "unet":
+            self.net = SimpleUNet(in_channels=in_channels, out_channels=1)
+        elif backbone_type == "resunet":
+            self.net = ResUNet(in_channels=in_channels, out_channels=1)
+        else:
+            raise ValueError(f"Unknown backbone_type: {backbone_type}")
 
     def forward(self, y_noisy, cond_dict):
         """测试/推理阶段直接调用：一步吐出极其干净的原图"""
@@ -65,37 +73,27 @@ class LitPixelMeanFlow(pl.LightningModule):
         # 🌟 2. 核心魔法：噪声解耦与重采样增强 (Noise Resampling)
         # ==========================================
         # 提取当前 batch 绝对真实的物理噪声分布
-        real_noise = y_noisy - x_clean
+        if self.hparams.use_dynamic_aug:
+            real_noise = y_noisy - x_clean
+            aug_prob = random.random()
 
-        aug_prob = random.random()
-        if self.current_epoch >= int(self.trainer.max_epochs * 0.8):
-            aug_prob = 1.0
+            if self.current_epoch >= int(self.trainer.max_epochs * 0.8):
+                aug_prob = 1.0
 
-        if aug_prob < 0.3:
-            # 策略 A: 【跨图组合 - Noise Swapping】
-            # 将噪声在 Batch 维度向下滚动一格，把 B 图的真实噪声嫁接给 A 图
-            noise_shifted = torch.roll(real_noise, shifts=1, dims=0)
-            y_noisy = x_clean + noise_shifted
+            if aug_prob < 0.3:
+                # 策略 A: Noise Swapping
+                noise_shifted = torch.roll(real_noise, shifts=1, dims=0)
+                y_noisy = x_clean + noise_shifted
+                y_blur = TF.gaussian_blur(y_noisy, kernel_size=[5, 5], sigma=[1.5, 1.5])
+                y_flip = TF.hflip(y_noisy)
 
-            # 重新实时生成物理先验
-            y_blur = TF.gaussian_blur(y_noisy, kernel_size=[5, 5], sigma=[1.5, 1.5])
-            y_flip = TF.hflip(y_noisy)
-
-        elif aug_prob < 0.6:
-            # 策略 B: 【采样生成 - Synthetic Noise Injection】
-            # 基于当前 batch 真实噪声的方差，凭空采样全新的高斯噪声
-            # 计算每张图的真实噪声标准差 sigma (为了支持广播，shape 转为 [B, 1, 1, 1])
-            sigma_real = real_noise.reshape(real_noise.shape[0], -1).std(dim=1).reshape(-1, 1, 1, 1)
-
-            # 生成全新的、但统计分布绝对严谨的高斯白噪声
-            synthetic_noise = torch.randn_like(x_clean) * sigma_real
-            y_noisy = x_clean + synthetic_noise
-
-            # 重新实时生成物理先验
-            y_blur = TF.gaussian_blur(y_noisy, kernel_size=[5, 5], sigma=[1.5, 1.5])
-            y_flip = TF.hflip(y_noisy)
-
-        # 注意：如果题目原始的加噪逻辑中没有做截断，这里也不需要 clamp，保持正宗的 Gaussian 即可。
+            elif aug_prob < 0.6:
+                # 策略 B: Synthetic Noise Injection
+                sigma_real = real_noise.reshape(real_noise.shape[0], -1).std(dim=1).reshape(-1, 1, 1, 1)
+                synthetic_noise = torch.randn_like(x_clean) * sigma_real
+                y_noisy = x_clean + synthetic_noise
+                y_blur = TF.gaussian_blur(y_noisy, kernel_size=[5, 5], sigma=[1.5, 1.5])
+                y_flip = TF.hflip(y_noisy)
 
         # ==========================================
         # 🌟 3. 打包条件字典，准备前向传播

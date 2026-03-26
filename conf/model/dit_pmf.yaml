@@ -1,11 +1,14 @@
 _target_: src.lightning_module.LitPixelMeanFlow
-in_channels: 3              # 输入通道: z_t, y_blur, y_flip
+backbone_type: vit # vit, resunet, unet
+use_dynamic_aug: true
+in_channels: 3         # input (3channels): z_t, y_blur, y_flip (1channel): z_t
 img_size: 28
 patch_size: 2
 hidden_dim: 256
 depth: 24
 num_heads: 8
 num_classes: 10
-num_cls_tokens: 4       # 4 个全局类别寄存器
+num_cls_tokens: 4
+num_register_tokens: 2
 learning_rate: 5e-4
 drop_path_rate: 0.1

@@ -17,48 +17,51 @@ from src.fashion_datamodule import FashionMNISTDataModule
 def main(cfg: DictConfig):
     pl.seed_everything(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 启动评估脚本，使用设备: {device}")
+    print(f"🚀 启动超级多模型横评脚本，使用设备: {device}")
 
     # ==========================================
-    # 1. 检查 Checkpoint 路径
+    # 1. 配置你的三个模型 Checkpoint 路径
     # ==========================================
+    # ⚠️ 请在这里替换为你实际的 checkpoint 路径！
+    checkpoints = {
+        "ResUNet w/o prior,data_aug": "checkpoints/best-pure_resunet-epoch=152-val_mse=0.00363.ckpt",  # 替换为真实的 UNet 权重
+        "ResUNet w/ prior,data_aug": "checkpoints/best-resunet-epoch=153-val_mse=0.00357.ckpt",  # 替换为真实的 ResUNet 权重
+        "ViT (Ours)": "checkpoints/best-vitdecouple-epoch=158-val_mse=0.00325.ckpt"  # 你的终极模型
+    }
 
-    ckpt_path = r"checkpoints/best-pmf-epoch=159-val_mse=0.00325.ckpt"
-    print(f" 正在加载模型权重: {ckpt_path}")
+    models = {}
+    metrics = {name: {"total_mse": 0.0, "total_infer_time": 0.0, "total_images": 0} for name in checkpoints.keys()}
 
     # ==========================================
-    # 2. 实例化数据和模型
+    # 2. 依次加载所有模型到显存
+    # ==========================================
+    for model_name, ckpt_path in checkpoints.items():
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"❌ 找不到 {model_name} 的权重文件: {ckpt_path}")
+
+        print(f"📦 正在加载 {model_name}: {ckpt_path}")
+        model = LitPixelMeanFlow.load_from_checkpoint(ckpt_path)
+        model.to(device)
+        model.eval()
+        models[model_name] = model
+
+    # ==========================================
+    # 3. 实例化数据
     # ==========================================
     datamodule = hydra.utils.instantiate(cfg.data)
     datamodule.setup(stage='test')
     test_loader = datamodule.test_dataloader()
 
-    model = LitPixelMeanFlow.load_from_checkpoint(ckpt_path)
-    model.to(device)
-    model.eval()  # 开启评估模式
-
-    # ==========================================
-    # 3. 统计参数量 (Parameters)
-    # ==========================================
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"📊 模型总参数量: {total_params / 1e6:.2f} M")
-
-    # ==========================================
-    # 4. 核心评测循环：计算 MSE 与 推理延迟
-    # ==========================================
-    total_mse = 0.0
-    total_images = 0
-    total_infer_time = 0.0
-
     # 用于画图的样本缓存
-    vis_y_noisy, vis_x_pred, vis_x_clean = None, None, None
-    num_vis_samples = 10  # 我们选 10 张图画并排对比图
+    vis_data = {}
+    num_vis_samples = 10  # 选 10 张图画并排对比图
 
-    print("⏳ 开始在测试集上进行极速推导...")
+    # ==========================================
+    # 4. 核心评测循环：跑遍测试集
+    # ==========================================
+    print("⏳ 开始在测试集上进行多模型同步推导...")
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
-            # 将数据推到 GPU
             x_clean = batch.get('x_clean', None)
             y_noisy = batch['y'].to(device)
             cond_dict = {
@@ -67,90 +70,90 @@ def main(cfg: DictConfig):
                 'sigma': batch['sigma'].to(device),
                 'label': batch['label'].to(device)
             }
-
             B = y_noisy.shape[0]
 
-            # --- 测速开始 (为了准确测量 GPU 时间，使用 cuda.synchronize) ---
-            if device.type == 'cuda': torch.cuda.synchronize()
-            start_time = time.time()
-
-            x_pred = model(y_noisy, cond_dict)
-
-            if device.type == 'cuda': torch.cuda.synchronize()
-            end_time = time.time()
-            # --- 测速结束 ---
-
-            total_infer_time += (end_time - start_time)
-            total_images += B
-
-            # 累计 MSE
-            if x_clean is not None:
-                x_clean = x_clean.to(device)
-                # 注意计算 MSE 前后 shape 保持一致
-                mse = F.mse_loss(x_pred, x_clean, reduction='sum')
-                total_mse += mse.item()
-
-            # 保存第一批的 10 张图用于后续可视化
             if batch_idx == 3 and x_clean is not None:
-                vis_y_noisy = y_noisy[:num_vis_samples].cpu()
-                vis_x_pred = x_pred[:num_vis_samples].cpu()
-                vis_x_clean = x_clean[:num_vis_samples].cpu()
+                vis_data['Input'] = y_noisy[:num_vis_samples].cpu()
+                vis_data['GT'] = x_clean[:num_vis_samples].cpu()
 
-    # 计算最终指标
-    avg_mse = total_mse / (total_images * 28 * 28) if x_clean is not None else -1
-    avg_latency_ms = (total_infer_time / total_images) * 1000  # 毫秒/张
-    throughput_fps = total_images / total_infer_time  # 帧/秒 (FPS)
+            # 遍历三个模型进行推理
+            for model_name, model in models.items():
+                if device.type == 'cuda': torch.cuda.synchronize()
+                start_time = time.time()
 
-    print("\n" + "=" * 40)
-    print("🏆 评测结果报告")
-    print("=" * 40)
-    print(f"Test MSE:           {avg_mse:.5f}")
-    print(f"Parameters:         {trainable_params / 1e6:.2f} M")
-    print(f"Latency per image:  {avg_latency_ms:.2f} ms")
-    print(f"Throughput (FPS):   {throughput_fps:.2f} img/s")
-    print("=" * 40)
+                x_pred = model(y_noisy, cond_dict)
+
+                if device.type == 'cuda': torch.cuda.synchronize()
+                end_time = time.time()
+
+                # 记录指标
+                metrics[model_name]["total_infer_time"] += (end_time - start_time)
+                metrics[model_name]["total_images"] += B
+
+                if x_clean is not None:
+                    mse = F.mse_loss(x_pred, x_clean.to(device), reduction='sum')
+                    metrics[model_name]["total_mse"] += mse.item()
+
+                # 提取第 10 个 Batch 用于可视化
+                if batch_idx == 3 and x_clean is not None:
+                    vis_data[model_name] = x_pred[:num_vis_samples].cpu()
 
     # ==========================================
-    # 5. 生成极其震撼的可视化网格图
+    # 5. 打印性能指标 & 保存 CSV
     # ==========================================
+    print("\n" + "=" * 50)
+    print("🏆 超级多模型横评结果报告")
+    print("=" * 50)
+
+    csv_data = {"Model Name": [], "Params (M)": [], "Test MSE": [], "Latency (ms/img)": [], "Throughput (FPS)": []}
+
+    for model_name, model in models.items():
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        avg_mse = metrics[model_name]["total_mse"] / (metrics[model_name]["total_images"] * 28 * 28)
+        avg_latency_ms = (metrics[model_name]["total_infer_time"] / metrics[model_name]["total_images"]) * 1000
+        throughput_fps = metrics[model_name]["total_images"] / metrics[model_name]["total_infer_time"]
+
+        print(f"[{model_name}]")
+        print(f"  MSE:        {avg_mse:.5f}")
+        print(f"  Params:     {trainable_params / 1e6:.2f} M")
+        print(f"  Latency:    {avg_latency_ms:.2f} ms")
+        print("-" * 50)
+
+        csv_data["Model Name"].append(model_name)
+        csv_data["Params (M)"].append(round(trainable_params / 1e6, 2))
+        csv_data["Test MSE"].append(round(avg_mse, 5))
+        csv_data["Latency (ms/img)"].append(round(avg_latency_ms, 2))
+        csv_data["Throughput (FPS)"].append(round(throughput_fps, 2))
+
     os.makedirs("results", exist_ok=True)
-    if vis_y_noisy is not None:
-        print("🎨 正在生成残差对比图 (results/denoising_comparison.png)...")
-        # 把三组图拼成一个长条：
-        # 第一行: 含噪图 (Input)
-        # 第二行: 模型预测图 (pMF-DiT Output)
-        # 第三行: 干净真实图 (Ground Truth)
-        # 将它们全部拉到 0-1 范围用于显示（如果是标准化的记得反归一化，这里假设已经是 0-1）
-        grid_input = torch.cat([vis_y_noisy, vis_x_pred, vis_x_clean], dim=0)
-
-        # 使用 make_grid，nrow 设置为我们要展示的样本数
-        vis_grid = make_grid(grid_input, nrow=num_vis_samples, padding=2, normalize=True, scale_each=True)
-        save_image(vis_grid, "results/denoising_comparison.png")
-        print("✅ 对比图保存成功！")
+    pd.DataFrame(csv_data).to_csv("results/multi_model_comparison.csv", index=False)
+    print("💾 性能表格已保存到 results/multi_model_comparison.csv")
 
     # ==========================================
-    # 6. 保存性能指标到 CSV (为报告表格准备)
+    # 6. 🎨 生成极其震撼的可视化六宫格网格图
     # ==========================================
-    csv_path = "results/model_performance_metrics.csv"
-    print(f"💾 正在将性能指标保存到 {csv_path}...")
+    if 'Input' in vis_data:
+        print("🎨 正在生成绝杀对比图 (results/ultimate_comparison.png)...")
 
-    metrics_data = {
-        "Model Name": ["pMF-DiT (1-NFE)"],
-        "Params (M)": [round(trainable_params / 1e6, 2)],
-        "Test MSE": [round(avg_mse, 5)],
-        "Latency (ms/img)": [round(avg_latency_ms, 2)],
-        "Throughput (FPS)": [round(throughput_fps, 2)]
-    }
+        # 🌟 绝杀图层：ResUNet 和 ViT 的差异放大图
+        # 我们用绝对值差异，并乘以 3 放大差异，方便肉眼观察到底差在哪里
+        diff_map = torch.abs(vis_data['ResUNet w/o prior,data_aug'] - vis_data['ViT (Ours)'])
+        diff_map = torch.clamp(diff_map * 3.0, 0, 1)  # 放大 3 倍并截断到 0-1
 
-    df_metrics = pd.DataFrame(metrics_data)
+        # 按照你构思的极品顺序拼接：
+        grid_input = torch.cat([
+            vis_data['Input'],  # 第一行: 含噪图
+            vis_data['ResUNet w/o prior,data_aug'],  # 第二行: UNet 预测
+            vis_data['ResUNet w/ prior,data_aug'],  # 第三行: ResUNet 预测
+            vis_data['ViT (Ours)'],  # 第四行: ViT 预测
+            diff_map,  # 第五行: ResUNet 和 ViT 的差异 (放大3倍)
+            vis_data['GT']  # 第六行: 干净原图
+        ], dim=0)
 
-    # 如果文件已存在，我们可以追加写入，方便你对比其他模型 (比如 ResUNet)
-    if os.path.exists(csv_path):
-        df_existing = pd.read_csv(csv_path)
-        df_metrics = pd.concat([df_existing, df_metrics], ignore_index=True)
-
-    df_metrics.to_csv(csv_path, index=False)
-    print("✅ CSV 性能表格保存成功！报告里的表格有素材了！")
+        # 生成并保存
+        vis_grid = make_grid(grid_input, nrow=num_vis_samples, padding=2, normalize=False)
+        save_image(vis_grid, "results/ultimate_comparison.png")
+        print("✅ 终极对比图保存成功！可以直接贴到报告里了！")
 
 
 if __name__ == "__main__":

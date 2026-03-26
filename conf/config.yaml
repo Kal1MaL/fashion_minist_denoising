@@ -1,14 +1,14 @@
 defaults:
   - _self_
   - model: dit_pmf
-  - data: fashion_mnist   # 对应我们上一轮写的 DataModule
+  - data: fashion_mnist
 
 trainer:
   max_epochs: 160
   accelerator: "gpu"
   devices: 2
-  precision: "bf16-mixed" # 开启混合精度加速
-  gradient_clip_val: 1.0     # <--- 加上这一行！限制全局梯度范数最大为 1
+  precision: "bf16-mixed"
+  gradient_clip_val: 1.0
   gradient_clip_algorithm: "norm"
 
 experiment_name: "pmf_dit_rope_hybrid_data2data"
