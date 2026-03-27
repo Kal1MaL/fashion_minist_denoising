@@ -5,7 +5,7 @@ import torchvision.transforms.functional as TF
 import random
 
 from src.dit_pmf import DiTPixelMeanFlow
-from src.baseline_unet import SimpleUNet,ResUNet
+from src.baseline_unet import SimpleUNet, ResUNet
 
 class LitPixelMeanFlow(pl.LightningModule):
     def __init__(self, in_channels, img_size, patch_size, hidden_dim,
@@ -35,7 +35,7 @@ class LitPixelMeanFlow(pl.LightningModule):
             raise ValueError(f"Unknown backbone_type: {backbone_type}")
 
     def forward(self, y_noisy, cond_dict):
-        """测试/推理阶段直接调用：一步吐出极其干净的原图"""
+        """Forward pass for inference."""
         return self.net(y_noisy, cond_dict)
 
     def training_step(self, batch, batch_idx):
@@ -45,9 +45,7 @@ class LitPixelMeanFlow(pl.LightningModule):
         y_blur = batch['y_blur'].clone()
         y_flip = batch['y_flip'].clone()
 
-        # ==========================================
-        # 🌟 1. 基础几何数据增强 (严格同步所有先验图)
-        # ==========================================
+        # 1. Geometric augmentations
         if random.random() > 0.5:
             x_clean = TF.hflip(x_clean)
             y_noisy = TF.hflip(y_noisy)
@@ -69,10 +67,7 @@ class LitPixelMeanFlow(pl.LightningModule):
             y_blur = torch.rot90(y_blur, k, dims=[-2, -1])
             y_flip = torch.rot90(y_flip, k, dims=[-2, -1])
 
-        # ==========================================
-        # 🌟 2. 核心魔法：噪声解耦与重采样增强 (Noise Resampling)
-        # ==========================================
-        # 提取当前 batch 绝对真实的物理噪声分布
+        # 2. Noise resampling augmentations
         if self.hparams.use_dynamic_aug:
             real_noise = y_noisy - x_clean
             aug_prob = random.random()
@@ -81,23 +76,21 @@ class LitPixelMeanFlow(pl.LightningModule):
                 aug_prob = 1.0
 
             if aug_prob < 0.3:
-                # 策略 A: Noise Swapping
+                # Strategy A: Noise Swapping
                 noise_shifted = torch.roll(real_noise, shifts=1, dims=0)
                 y_noisy = x_clean + noise_shifted
                 y_blur = TF.gaussian_blur(y_noisy, kernel_size=[5, 5], sigma=[1.5, 1.5])
                 y_flip = TF.hflip(y_noisy)
 
             elif aug_prob < 0.6:
-                # 策略 B: Synthetic Noise Injection
+                # Strategy B: Synthetic Noise Injection
                 sigma_real = real_noise.reshape(real_noise.shape[0], -1).std(dim=1).reshape(-1, 1, 1, 1)
                 synthetic_noise = torch.randn_like(x_clean) * sigma_real
                 y_noisy = x_clean + synthetic_noise
                 y_blur = TF.gaussian_blur(y_noisy, kernel_size=[5, 5], sigma=[1.5, 1.5])
                 y_flip = TF.hflip(y_noisy)
 
-        # ==========================================
-        # 🌟 3. 打包条件字典，准备前向传播
-        # ==========================================
+        # 3. Prepare condition dict
         cond_dict = {
             'y_blur': y_blur,
             'y_flip': y_flip,
@@ -105,9 +98,7 @@ class LitPixelMeanFlow(pl.LightningModule):
             'label': batch['label']
         }
 
-        # ====================================================
-        # 纯粹的端到端 MSE 回归
-        # ====================================================
+        # End-to-end MSE regression
         x_pred = self.net(y_noisy, cond_dict)
         loss_mse = F.mse_loss(x_pred, x_clean)
 
@@ -115,7 +106,6 @@ class LitPixelMeanFlow(pl.LightningModule):
         return loss_mse
 
     def validation_step(self, batch, batch_idx):
-        """验证集上严格遵循原始噪声，不做任何增强"""
         x_clean = batch['x_clean']
         y_noisy = batch['y']
 
@@ -126,15 +116,11 @@ class LitPixelMeanFlow(pl.LightningModule):
             'label': batch['label']
         }
 
-        # 极速单步推导
         x_pred = self(y_noisy, cond_dict)
-
-        # 计算验证集 MSE
         val_mse = F.mse_loss(x_pred, x_clean)
         self.log('val_mse', val_mse, prog_bar=True, sync_dist=True)
 
     def configure_optimizers(self):
-        # 定义优化器 (AdamW)
         optimizer = torch.optim.AdamW(
             self.net.parameters(),
             lr=self.hparams.learning_rate,
@@ -143,7 +129,6 @@ class LitPixelMeanFlow(pl.LightningModule):
 
         total_steps = self.trainer.estimated_stepping_batches
 
-        # 实例化 OneCycleLR
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=self.hparams.learning_rate,
